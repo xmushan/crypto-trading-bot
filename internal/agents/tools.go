@@ -187,7 +187,7 @@ func (t *SentimentTool) InvokableRun(ctx context.Context, argumentsInJSON string
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	sentiment := dataflows.GetSentimentIndicators(ctx, args.Symbol)
+	sentiment := dataflows.GetSentimentIndicators(ctx, args.Symbol, t.config.BinanceProxy, t.config.BinanceProxyInsecureSkipTLS)
 	report := dataflows.FormatSentimentReport(sentiment)
 
 	return report, nil

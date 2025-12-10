@@ -93,9 +93,9 @@ func getDefaultConfigs() map[string]TrailingStopConfig {
 		InitialATRMultiplier:  3,
 		TrailingATRPeriod:     7, // 使用 ATR(7) - 标准 Wilder 周期
 		TrailingATRMultiplier: 3,
-		UpdateThreshold:       0.3, // 0.3% - update only if change exceeds this
-		MinStopDistance:       0.5, // 0.5% - minimum stop distance from entry
-		MaxStopDistance:       5.0, // 5.0% - maximum stop distance from entry
+		UpdateThreshold:       0.15, // 0.3% - update only if change exceeds this
+		MinStopDistance:       0.5,  // 0.5% - minimum stop distance from entry
+		MaxStopDistance:       5.0,  // 5.0% - maximum stop distance from entry
 	}
 
 	configs := make(map[string]TrailingStopConfig)
@@ -107,7 +107,7 @@ func getDefaultConfigs() map[string]TrailingStopConfig {
 		InitialATRMultiplier:  3.5,
 		TrailingATRPeriod:     7,
 		TrailingATRMultiplier: 2.8,
-		UpdateThreshold:       0.3,
+		UpdateThreshold:       0.15,
 		MinStopDistance:       0.5,
 		MaxStopDistance:       6.0,
 	}
@@ -119,7 +119,7 @@ func getDefaultConfigs() map[string]TrailingStopConfig {
 		InitialATRMultiplier:  3.5,
 		TrailingATRPeriod:     7,
 		TrailingATRMultiplier: 2.7,
-		UpdateThreshold:       0.3,
+		UpdateThreshold:       0.15,
 		MinStopDistance:       0.5,
 		MaxStopDistance:       6.0,
 	}
@@ -131,7 +131,7 @@ func getDefaultConfigs() map[string]TrailingStopConfig {
 		InitialATRMultiplier:  3.5,
 		TrailingATRPeriod:     7,
 		TrailingATRMultiplier: 2.5, // Slightly wider / 稍微宽松一点
-		UpdateThreshold:       0.3,
+		UpdateThreshold:       0.15,
 		MinStopDistance:       0.5,
 		MaxStopDistance:       8.0,
 	}
@@ -142,8 +142,8 @@ func getDefaultConfigs() map[string]TrailingStopConfig {
 		InitialATRPeriod:      7,
 		InitialATRMultiplier:  3.5,
 		TrailingATRPeriod:     7,
-		TrailingATRMultiplier: 2.2,
-		UpdateThreshold:       0.3,
+		TrailingATRMultiplier: 2.6,
+		UpdateThreshold:       0.15,
 		MinStopDistance:       0.5,
 		MaxStopDistance:       7.0,
 	}

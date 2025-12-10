@@ -941,15 +941,40 @@ func (sm *StopLossManager) placeStopLossOrder(ctx context.Context, pos *Position
 
 	binanceSymbol := sm.config.GetBinanceSymbolFor(pos.Symbol)
 
-	// Create stop-loss order
-	// 创建止损单
+	// Calculate limit price for STOP order (since STOP_MARKET now requires Algo Order API)
+	// 计算 STOP 订单的限价（因为 STOP_MARKET 现在需要 Algo Order API）
+	// For stop-loss, we want to ensure execution, so:
+	// 为了确保止损能成交：
+	//   - Long position (sell): limit price slightly lower than stop price
+	//     多仓（卖出）：限价略低于止损价
+	//   - Short position (buy): limit price slightly higher than stop price
+	//     空仓（买入）：限价略高于止损价
+	var limitPrice float64
+	if pos.Side == "short" {
+		// Short position: buy to close, set limit higher to ensure execution
+		// 空仓：买入平仓，设置更高限价确保成交
+		limitPrice = stopPrice * 1.01 // 1% higher than stop price
+	} else {
+		// Long position: sell to close, set limit lower to ensure execution
+		// 多仓：卖出平仓，设置更低限价确保成交
+		limitPrice = stopPrice * 0.99 // 1% lower than stop price
+	}
+
+	// Create stop-loss order using STOP type (not STOP_MARKET)
+	// 使用 STOP 类型创建止损单（不再使用 STOP_MARKET）
+	// Note: Binance API change (error -4120): STOP_MARKET now requires Algo Order API
+	// 注意：币安 API 变更（错误 -4120）：STOP_MARKET 现在需要 Algo Order API
+	// Using STOP (limit order triggered at stop price) as workaround
+	// 使用 STOP（在止损价触发的限价单）作为替代方案
 	order, err := sm.executor.client.NewCreateOrderService().
 		Symbol(binanceSymbol).
 		Side(orderSide).
-		Type(futures.OrderTypeStopMarket).
+		Type(futures.OrderTypeStop).
 		StopPrice(fmt.Sprintf("%.2f", stopPrice)).
+		Price(fmt.Sprintf("%.2f", limitPrice)).
 		Quantity(fmt.Sprintf("%.4f", pos.Quantity)).
-		ReduceOnly(true). // 只平仓不开仓 / Close only
+		TimeInForce(futures.TimeInForceTypeGTC). // Good Till Cancel
+		ReduceOnly(true).                        // 只平仓不开仓 / Close only
 		Do(ctx)
 
 	if err != nil {
@@ -961,8 +986,8 @@ func (sm *StopLossManager) placeStopLossOrder(ctx context.Context, pos *Position
 	if sm.executor.testMode {
 		modeLabel = "🧪 [测试网] "
 	}
-	sm.logger.Success(fmt.Sprintf("%s【%s】止损单已下达: %.2f (订单ID: %s, 当前价: %.2f)",
-		modeLabel, pos.Symbol, stopPrice, pos.StopLossOrderID, currentPrice))
+	sm.logger.Success(fmt.Sprintf("%s【%s】止损单已下达: 止损价=%.2f, 限价=%.2f (订单ID: %s, 当前价: %.2f)",
+		modeLabel, pos.Symbol, stopPrice, limitPrice, pos.StopLossOrderID, currentPrice))
 
 	return nil
 }

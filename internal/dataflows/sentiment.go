@@ -1,113 +1,92 @@
 package dataflows
 
 import (
-	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
-	"strings"
+	"net/url"
 	"time"
 )
 
 const (
-	cryptoOracleAPIURL = "https://service.cryptoracle.network/openapi/v2/endpoint"
-	cryptoOracleAPIKey = "7ad48a56-8730-4238-a714-eebc30834e3e"
+	// CoinMarketCap Fear and Greed API
+	// CoinMarketCap 恐惧和贪婪指数 API
+	coinMarketCapAPIURL = "https://pro-api.coinmarketcap.com/v3/fear-and-greed/latest"
+	coinMarketCapAPIKey = "b62aad6b3a5f456e8e7a3e3aa4048a89"
 )
 
 // SentimentData holds market sentiment information
+// SentimentData 保存市场情绪信息
 type SentimentData struct {
-	Success            bool
-	PositiveRatio      float64
-	NegativeRatio      float64
-	NetSentiment       float64
-	SentimentLevel     string
-	DataTime           string
-	DataDelayMinutes   int
-	Symbol             string
-	Error              string
+	Success          bool
+	FearGreedValue   int    // 0-100, 恐惧和贪婪指数 / Fear and Greed Index
+	Classification   string // "Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed"
+	DataTime         string // 数据更新时间 / Data update time
+	DataDelayMinutes int    // 数据延迟分钟数 / Data delay in minutes
+	Error            string
 }
 
-// CryptoOracleRequest represents the API request structure
-type CryptoOracleRequest struct {
-	APIKey    string   `json:"apiKey"`
-	Endpoints []string `json:"endpoints"`
-	StartTime string   `json:"startTime"`
-	EndTime   string   `json:"endTime"`
-	TimeType  string   `json:"timeType"`
-	Token     []string `json:"token"`
-}
-
-// CryptoOracleResponse represents the API response structure
-type CryptoOracleResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"msg"`
-	Data    []struct {
-		TimePeriods []struct {
-			StartTime string `json:"startTime"`
-			EndTime   string `json:"endTime"`
-			Data      []struct {
-				Endpoint string `json:"endpoint"`
-				Value    string `json:"value"`
-			} `json:"data"`
-		} `json:"timePeriods"`
+// CoinMarketCapResponse represents the CMC API response structure
+// CoinMarketCapResponse 表示 CMC API 响应结构
+type CoinMarketCapResponse struct {
+	Data struct {
+		Value               int    `json:"value"`
+		UpdateTime          string `json:"update_time"`
+		ValueClassification string `json:"value_classification"`
 	} `json:"data"`
+	Status struct {
+		Timestamp    string `json:"timestamp"`
+		ErrorCode    string `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
+		Elapsed      int    `json:"elapsed"`
+		CreditCount  int    `json:"credit_count"`
+	} `json:"status"`
 }
 
-// GetSentimentIndicators fetches market sentiment indicators
-func GetSentimentIndicators(ctx context.Context, symbol string) *SentimentData {
-	// Get time range (account for ~40 min delay)
-	endTime := time.Now().Add(-40 * time.Minute)
-	startTime := endTime.Add(-4 * time.Hour)
+// GetSentimentIndicators fetches market sentiment indicators from CoinMarketCap
+// GetSentimentIndicators 从 CoinMarketCap 获取市场情绪指标
+func GetSentimentIndicators(ctx context.Context, symbol string, proxyURL string, insecureSkipTLS bool) *SentimentData {
+	// Note: CMC Fear & Greed Index is market-wide, not symbol-specific
+	// 注意：CMC 恐惧和贪婪指数是市场级别的，不针对特定交易对
+	_ = symbol // unused but kept for API compatibility
 
-	requestBody := CryptoOracleRequest{
-		APIKey:    cryptoOracleAPIKey,
-		Endpoints: []string{"CO-A-02-01", "CO-A-02-02"}, // Positive/Negative sentiment
-		StartTime: startTime.Format("2006-01-02 15:04:05"),
-		EndTime:   endTime.Format("2006-01-02 15:04:05"),
-		TimeType:  "15m",
-		Token:     []string{symbol},
-	}
-
-	jsonData, err := json.Marshal(requestBody)
+	req, err := http.NewRequestWithContext(ctx, "GET", coinMarketCapAPIURL, nil)
 	if err != nil {
 		return &SentimentData{
 			Success: false,
-			Error:   fmt.Sprintf("Failed to marshal request: %v", err),
-			Symbol:  symbol,
+			Error:   fmt.Sprintf("创建请求失败: %v", err),
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", cryptoOracleAPIURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return &SentimentData{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to create request: %v", err),
-			Symbol:  symbol,
-		}
-	}
+	req.Header.Set("X-CMC_PRO_API_KEY", coinMarketCapAPIKey)
+	req.Header.Set("Accept", "application/json")
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-KEY", cryptoOracleAPIKey)
-
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Create HTTP client with proxy support
+	// 创建支持代理的 HTTP 客户端
+	client := createHTTPClientWithProxy(proxyURL, insecureSkipTLS)
 	resp, err := client.Do(req)
 	if err != nil {
+		// Enhanced error message with network troubleshooting hints
+		// 增强错误信息，提供网络故障排查提示
 		return &SentimentData{
 			Success: false,
-			Error:   fmt.Sprintf("API request failed: %v", err),
-			Symbol:  symbol,
+			Error: fmt.Sprintf("网络请求失败: %v (提示: 如果你在国内，可能需要配置代理或使用 VPN。"+
+				"CoinMarketCap API 需要稳定的国际网络连接)", err),
 		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Try to read error body for more details
+		// 尝试读取错误响应体以获取更多详情
+		body, _ := io.ReadAll(resp.Body)
 		return &SentimentData{
 			Success: false,
-			Error:   fmt.Sprintf("HTTP request failed: status_code=%d", resp.StatusCode),
-			Symbol:  symbol,
+			Error: fmt.Sprintf("HTTP 状态码错误 %d, 响应: %s (提示: 可能是 API Key 无效或请求受限)",
+				resp.StatusCode, string(body)),
 		}
 	}
 
@@ -115,158 +94,94 @@ func GetSentimentIndicators(ctx context.Context, symbol string) *SentimentData {
 	if err != nil {
 		return &SentimentData{
 			Success: false,
-			Error:   fmt.Sprintf("Failed to read response: %v", err),
-			Symbol:  symbol,
+			Error:   fmt.Sprintf("读取响应失败: %v", err),
 		}
 	}
 
-	var apiResp CryptoOracleResponse
+	var apiResp CoinMarketCapResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return &SentimentData{
 			Success: false,
-			Error:   fmt.Sprintf("Failed to parse response: %v", err),
-			Symbol:  symbol,
+			Error: fmt.Sprintf("解析 JSON 失败: %v, 原始响应: %s",
+				err, string(body)[:200]), // 只显示前200字符
 		}
 	}
 
-	if apiResp.Code != 200 || len(apiResp.Data) == 0 {
+	if apiResp.Status.ErrorCode != "0" {
 		return &SentimentData{
 			Success: false,
-			Error:   fmt.Sprintf("API returned error: code=%d, msg=%s", apiResp.Code, apiResp.Message),
-			Symbol:  symbol,
+			Error: fmt.Sprintf("API 错误: code=%s, msg=%s",
+				apiResp.Status.ErrorCode, apiResp.Status.ErrorMessage),
 		}
 	}
 
-	// Find first valid data period
-	for _, period := range apiResp.Data[0].TimePeriods {
-		sentiment := make(map[string]float64)
-		validDataFound := false
-
-		for _, item := range period.Data {
-			if strings.TrimSpace(item.Value) != "" {
-				value, err := strconv.ParseFloat(item.Value, 64)
-				if err == nil && (item.Endpoint == "CO-A-02-01" || item.Endpoint == "CO-A-02-02") {
-					sentiment[item.Endpoint] = value
-					validDataFound = true
-				}
-			}
-		}
-
-		// Check if we have both positive and negative sentiment
-		if validDataFound {
-			positive, hasPositive := sentiment["CO-A-02-01"]
-			negative, hasNegative := sentiment["CO-A-02-02"]
-
-			if hasPositive && hasNegative {
-				netSentiment := positive - negative
-
-				// Calculate data delay
-				dataTime, _ := time.Parse("2006-01-02 15:04:05", period.StartTime)
-				dataDelay := int(time.Since(dataTime).Minutes())
-
-				return &SentimentData{
-					Success:          true,
-					PositiveRatio:    positive,
-					NegativeRatio:    negative,
-					NetSentiment:     netSentiment,
-					SentimentLevel:   interpretSentiment(netSentiment),
-					DataTime:         period.StartTime,
-					DataDelayMinutes: dataDelay,
-					Symbol:           symbol,
-				}
-			}
-		}
+	// Parse update time
+	// 解析更新时间
+	updateTime, err := time.Parse(time.RFC3339, apiResp.Data.UpdateTime)
+	if err != nil {
+		updateTime = time.Now() // fallback to current time
 	}
+
+	dataDelay := int(time.Since(updateTime).Minutes())
 
 	return &SentimentData{
-		Success: false,
-		Error:   "所有时间段数据都为空（可能数据延迟超过预期）",
-		Symbol:  symbol,
+		Success:          true,
+		FearGreedValue:   apiResp.Data.Value,
+		Classification:   apiResp.Data.ValueClassification,
+		DataTime:         updateTime.Format("2006-01-02 15:04:05"),
+		DataDelayMinutes: dataDelay,
 	}
 }
 
-// interpretSentiment interprets the net sentiment value
-func interpretSentiment(netSentiment float64) string {
+// createHTTPClientWithProxy creates an HTTP client with proxy support
+// createHTTPClientWithProxy 创建支持代理的 HTTP 客户端
+func createHTTPClientWithProxy(proxyURL string, insecureSkipTLS bool) *http.Client {
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: insecureSkipTLS,
+		},
+	}
+
+	// Configure proxy if provided
+	// 如果提供了代理，则配置代理
+	if proxyURL != "" {
+		proxy, err := url.Parse(proxyURL)
+		if err == nil {
+			transport.Proxy = http.ProxyURL(proxy)
+		}
+	}
+
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+	}
+}
+
+// interpretFearGreed interprets the fear and greed index value (0-100)
+// interpretFearGreed 解释恐惧和贪婪指数值 (0-100)
+func interpretFearGreed(value int) string {
 	switch {
-	case netSentiment >= 0.7:
-		return "极度乐观 🔥"
-	case netSentiment >= 0.5:
-		return "强烈乐观 📈"
-	case netSentiment >= 0.3:
-		return "偏向乐观 ✅"
-	case netSentiment >= 0.1:
-		return "轻度乐观 ↗️"
-	case netSentiment >= -0.1:
-		return "中性 ➖"
-	case netSentiment >= -0.3:
-		return "轻度悲观 ↘️"
-	case netSentiment >= -0.5:
-		return "偏向悲观 ❌"
-	case netSentiment >= -0.7:
-		return "强烈悲观 📉"
+	case value >= 75:
+		return "极度贪婪 🔥 (Extreme Greed)"
+	case value >= 55:
+		return "贪婪 📈 (Greed)"
+	case value >= 45:
+		return "中性 ➖ (Neutral)"
+	case value >= 20:
+		return "恐惧 📉 (Fear)"
 	default:
-		return "极度悲观 ❄️"
+		return "极度恐惧 ❄️ (Extreme Fear)"
 	}
 }
 
 // FormatSentimentReport formats sentiment data as a readable report
+// FormatSentimentReport 格式化情绪数据为可读报告
 func FormatSentimentReport(sentiment *SentimentData) string {
 	if !sentiment.Success {
-		return fmt.Sprintf(`
-# 市场情绪数据获取失败
-
-⚠️ 错误信息: %s
-⚠️ 交易对: %s
-
-说明: 本次分析无法获取市场情绪数据，建议谨慎交易。
-`, sentiment.Error, sentiment.Symbol)
+		return fmt.Sprintf("市场情绪数据获取失败: %s", sentiment.Error)
 	}
 
-	// Generate sentiment trend description
-	var trendDesc string
-	net := sentiment.NetSentiment
-
-	switch {
-	case net >= 0.5:
-		trendDesc = "市场情绪极度乐观，可能存在过度买入风险，需警惕回调。"
-	case net >= 0.3:
-		trendDesc = "市场情绪偏向乐观，多头占据优势，适合顺势做多。"
-	case net >= 0.1:
-		trendDesc = "市场情绪轻度乐观，多头略占优势，可考虑轻仓做多。"
-	case net >= -0.1:
-		trendDesc = "市场情绪相对中性，多空分歧较大，建议观望或轻仓操作。"
-	case net >= -0.3:
-		trendDesc = "市场情绪轻度悲观，空头略占优势，可考虑轻仓做空。"
-	case net >= -0.5:
-		trendDesc = "市场情绪偏向悲观，空头占据优势，适合顺势做空。"
-	default:
-		trendDesc = "市场情绪极度悲观，可能存在恐慌性抛售，需警惕反弹或寻找抄底机会。"
-	}
-
-	return fmt.Sprintf(`
-# 市场情绪分析报告（%s）
-
-## 情绪指标概览
-- **数据时间**: %s（延迟 %d 分钟）
-- **正面情绪比率**: %.2f%%
-- **负面情绪比率**: %.2f%%
-- **净情绪值**: %+.4f
-- **情绪等级**: %s
-
-## 情绪解读
-%s
-
-## 交易建议参考
-- **净情绪 > 0.3**: 市场偏多，可考虑做多策略
-- **净情绪 < -0.3**: 市场偏空，可考虑做空策略
-- **|净情绪| < 0.3**: 市场中性，建议观望或轻仓操作
-- **|净情绪| > 0.6**: 极端情绪，警惕反转风险
-
-## 数据来源
-- API: CryptoOracle Sentiment Indicators
-- 指标: CO-A-02-01 (正面情绪), CO-A-02-02 (负面情绪)
-- 时间粒度: 15分钟
-`, sentiment.Symbol, sentiment.DataTime, sentiment.DataDelayMinutes,
-		sentiment.PositiveRatio*100, sentiment.NegativeRatio*100,
-		sentiment.NetSentiment, sentiment.SentimentLevel, trendDesc)
+	return fmt.Sprintf(`由 CoinMarketCap 获取的加密货币恐惧与贪婪指数，显示当前市场情绪为: %s (%d/100) `,
+		interpretFearGreed(sentiment.FearGreedValue),
+		sentiment.FearGreedValue)
 }

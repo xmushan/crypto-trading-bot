@@ -536,8 +536,8 @@ func (g *SimpleTradingGraph) BuildGraph(ctx context.Context) (compose.Runnable[m
 		return results, nil
 	})
 
-	// Sentiment Analyst Lambda - Fetches market sentiment for all symbols
-	// Sentiment Analyst Lambda - 为所有交易对获取市场情绪
+	// Sentiment Analyst Lambda - 获取市场情绪（只调用一次 API，所有交易对共享）
+	// Sentiment Analyst Lambda - Get market sentiment (call API once, shared by all symbols)
 	sentimentAnalyst := compose.InvokableLambda(func(ctx context.Context, input map[string]any) (map[string]any, error) {
 		results := make(map[string]any)
 
@@ -547,47 +547,39 @@ func (g *SimpleTradingGraph) BuildGraph(ctx context.Context) (compose.Runnable[m
 			g.logger.Info("ℹ️  市场情绪分析已禁用（ENABLE_SENTIMENT_ANALYSIS=false）")
 			// Set empty sentiment reports for all symbols
 			// 为所有交易对设置空的情绪报告
+			emptyReport := "市场情绪分析已禁用"
 			for _, symbol := range g.state.Symbols {
-				emptyReport := `
-# 市场情绪分析（已禁用）
-
-`
 				g.state.SetSentimentReport(symbol, emptyReport)
 			}
 			return results, nil
 		}
 
-		g.logger.Info("🔍 情绪分析师：正在获取所有交易对的市场情绪...")
+		g.logger.Info("🔍 情绪分析师：正在获取市场情绪...")
 
-		// 并行分析所有交易对 / Analyze all symbols in parallel
-		var wg sync.WaitGroup
+		// 只调用一次 CMC API（Fear & Greed Index 是市场级别的，不针对特定币种）
+		// Call CMC API only once (Fear & Greed Index is market-wide, not symbol-specific)
+		sentiment := dataflows.GetSentimentIndicators(ctx, "", g.config.BinanceProxy, g.config.BinanceProxyInsecureSkipTLS)
 
-		for _, symbol := range g.state.Symbols {
-			wg.Add(1)
-			go func(sym string) {
-				defer wg.Done()
-
-				g.logger.Info(fmt.Sprintf("  😊 正在分析 %s 市场情绪...", sym))
-
-				// Extract base symbol (BTC from BTC/USDT)
-				// 提取基础币种（从 BTC/USDT 提取 BTC）
-				baseSymbol := strings.Split(sym, "/")[0]
-
-				sentiment := dataflows.GetSentimentIndicators(ctx, baseSymbol)
-				if sentiment == nil {
-					g.logger.Warning(fmt.Sprintf("  ⚠️  %s 市场情绪数据获取失败", sym))
-					report := dataflows.FormatSentimentReport(nil)
-					g.state.SetSentimentReport(sym, report)
-				} else {
-					report := dataflows.FormatSentimentReport(sentiment)
-					g.state.SetSentimentReport(sym, report)
-					g.logger.Success(fmt.Sprintf("  ✅ %s 情绪分析完成", sym))
-				}
-			}(symbol)
+		var report string
+		if sentiment == nil || !sentiment.Success {
+			g.logger.Warning("  ⚠️  市场情绪数据获取失败")
+			report = dataflows.FormatSentimentReport(&dataflows.SentimentData{
+				Success: false,
+				Error:   "API 调用失败",
+			})
+		} else {
+			report = dataflows.FormatSentimentReport(sentiment)
+			g.logger.Success(fmt.Sprintf("  ✅ 市场情绪获取成功: %s (%d/100)",
+				sentiment.Classification, sentiment.FearGreedValue))
 		}
 
-		wg.Wait()
-		g.logger.Success("✅ 所有交易对的情绪分析完成")
+		// 将同一个市场情绪报告应用到所有交易对
+		// Apply the same market sentiment report to all symbols
+		for _, symbol := range g.state.Symbols {
+			g.state.SetSentimentReport(symbol, report)
+		}
+
+		g.logger.Success("✅ 市场情绪分析完成（所有交易对共享）")
 
 		return results, nil
 	})

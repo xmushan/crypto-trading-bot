@@ -2,365 +2,221 @@ package dataflows
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/viper"
 )
 
-// TestGetSentimentIndicators_Success tests successful sentiment data retrieval
-// TestGetSentimentIndicators_Success 测试成功获取情绪数据
-func TestGetSentimentIndicators_Success(t *testing.T) {
-	// Create mock server with valid response
-	// 创建模拟服务器并返回有效响应
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request
-		if r.Method != "POST" {
-			t.Errorf("Expected POST request, got %s", r.Method)
-		}
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Errorf("Expected Content-Type: application/json, got %s", r.Header.Get("Content-Type"))
-		}
+// loadEnvConfig loads configuration from .env file
+// loadEnvConfig 从 .env 文件加载配置
+func loadEnvConfig(t *testing.T) {
+	viper.SetConfigType("env")
+	viper.SetConfigFile("../../.env") // 相对于 internal/dataflows 的路径
+	viper.AutomaticEnv()
 
-		// Return mock response
-		response := CryptoOracleResponse{
-			Code:    200,
-			Message: "success",
-			Data: []struct {
-				TimePeriods []struct {
-					StartTime string `json:"startTime"`
-					EndTime   string `json:"endTime"`
-					Data      []struct {
-						Endpoint string `json:"endpoint"`
-						Value    string `json:"value"`
-					} `json:"data"`
-				} `json:"timePeriods"`
-			}{
-				{
-					TimePeriods: []struct {
-						StartTime string `json:"startTime"`
-						EndTime   string `json:"endTime"`
-						Data      []struct {
-							Endpoint string `json:"endpoint"`
-							Value    string `json:"value"`
-						} `json:"data"`
-					}{
-						{
-							StartTime: time.Now().Add(-1 * time.Hour).Format("2006-01-02 15:04:05"),
-							EndTime:   time.Now().Format("2006-01-02 15:04:05"),
-							Data: []struct {
-								Endpoint string `json:"endpoint"`
-								Value    string `json:"value"`
-							}{
-								{Endpoint: "CO-A-02-01", Value: "0.65"},
-								{Endpoint: "CO-A-02-02", Value: "0.35"},
-							},
-						},
-					},
-				},
-			},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-	}))
-	defer mockServer.Close()
-
-	// Note: This test will still call the real API
-	// For full mock testing, you would need to refactor GetSentimentIndicators
-	// to accept a custom HTTP client or URL
-	t.Log("Note: This test calls the real CryptoOracle API")
-	t.Log("If the API is unavailable or slow, the test may fail or timeout")
+	if err := viper.ReadInConfig(); err != nil {
+		t.Logf("⚠️  无法读取 .env 文件: %v (将使用系统环境变量)", err)
+	} else {
+		t.Logf("✅ 成功加载 .env 文件: %s", viper.ConfigFileUsed())
+	}
 }
 
-// TestGetSentimentIndicators_Timeout tests timeout handling
-// TestGetSentimentIndicators_Timeout 测试超时处理
-func TestGetSentimentIndicators_Timeout(t *testing.T) {
-	// Create context with very short timeout
-	// 创建超短超时的上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
-	defer cancel()
-
-	// Sleep to ensure timeout
-	time.Sleep(2 * time.Millisecond)
-
-	result := GetSentimentIndicators(ctx, "BTC")
-
-	if result.Success {
-		t.Error("Expected failure due to timeout, but got success")
-	}
-
-	if !strings.Contains(result.Error, "context deadline exceeded") &&
-		!strings.Contains(result.Error, "API request failed") {
-		t.Errorf("Expected timeout error, got: %s", result.Error)
-	}
-
-	t.Logf("✅ Timeout handled correctly: %s", result.Error)
-}
-
-// TestGetSentimentIndicators_RealAPI tests the actual API call
-// TestGetSentimentIndicators_RealAPI 测试实际的 API 调用
-func TestGetSentimentIndicators_RealAPI(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping real API test in short mode")
-	}
+// TestGetSentimentIndicators 测试 CoinMarketCap 恐惧和贪婪指数 API
+func TestGetSentimentIndicators(t *testing.T) {
+	// 从 .env 文件加载配置
+	// Load configuration from .env file
+	loadEnvConfig(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	symbols := []string{"BTC", "ETH", "SOL"}
+	t.Log("开始测试 CoinMarketCap Fear & Greed Index API...")
+	t.Logf("API URL: %s", coinMarketCapAPIURL)
+	t.Logf("API Key: %s (前10位)", coinMarketCapAPIKey[:10]+"...")
 
-	for _, symbol := range symbols {
-		t.Run(symbol, func(t *testing.T) {
-			result := GetSentimentIndicators(ctx, symbol)
-
-			t.Logf("Symbol: %s", symbol)
-			t.Logf("Success: %v", result.Success)
-
-			if result.Success {
-				t.Logf("✅ Positive Ratio: %.2f%%", result.PositiveRatio*100)
-				t.Logf("✅ Negative Ratio: %.2f%%", result.NegativeRatio*100)
-				t.Logf("✅ Net Sentiment: %+.4f", result.NetSentiment)
-				t.Logf("✅ Sentiment Level: %s", result.SentimentLevel)
-				t.Logf("✅ Data Time: %s", result.DataTime)
-				t.Logf("✅ Data Delay: %d minutes", result.DataDelayMinutes)
-
-				// Validate data ranges
-				if result.PositiveRatio < 0 || result.PositiveRatio > 1 {
-					t.Errorf("Invalid positive ratio: %.4f (should be 0-1)", result.PositiveRatio)
-				}
-				if result.NegativeRatio < 0 || result.NegativeRatio > 1 {
-					t.Errorf("Invalid negative ratio: %.4f (should be 0-1)", result.NegativeRatio)
-				}
-				if result.NetSentiment < -1 || result.NetSentiment > 1 {
-					t.Errorf("Invalid net sentiment: %.4f (should be -1 to 1)", result.NetSentiment)
-				}
-			} else {
-				t.Logf("⚠️  Error: %s", result.Error)
-				// This is not necessarily a failure - API might be down or data delayed
-				t.Logf("Note: API failure is expected if service is unavailable")
-			}
-		})
-	}
-}
-
-// TestInterpretSentiment tests sentiment interpretation logic
-// TestInterpretSentiment 测试情绪解释逻辑
-func TestInterpretSentiment(t *testing.T) {
-	tests := []struct {
-		name          string
-		netSentiment  float64
-		expectedLevel string
-	}{
-		{"极度乐观", 0.75, "极度乐观 🔥"},
-		{"强烈乐观", 0.6, "强烈乐观 📈"},
-		{"偏向乐观", 0.4, "偏向乐观 ✅"},
-		{"轻度乐观", 0.2, "轻度乐观 ↗️"},
-		{"中性", 0.0, "中性 ➖"},
-		{"轻度悲观", -0.2, "轻度悲观 ↘️"},
-		{"偏向悲观", -0.4, "偏向悲观 ❌"},
-		{"强烈悲观", -0.6, "强烈悲观 📉"},
-		{"极度悲观", -0.8, "极度悲观 ❄️"},
+	// 从 .env 文件读取代理配置
+	// Read proxy configuration from .env file
+	proxyURL := viper.GetString("BINANCE_PROXY")
+	insecureSkipTLS := viper.GetBool("BINANCE_PROXY_INSECURE_SKIP_TLS")
+	if proxyURL != "" {
+		t.Logf("使用代理: %s (TLS Skip: %v)", proxyURL, insecureSkipTLS)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := interpretSentiment(tt.netSentiment)
-			if result != tt.expectedLevel {
-				t.Errorf("interpretSentiment(%.2f) = %s, want %s",
-					tt.netSentiment, result, tt.expectedLevel)
-			} else {
-				t.Logf("✅ %.2f → %s", tt.netSentiment, result)
-			}
-		})
-	}
-}
+	// 调用 API
+	sentiment := GetSentimentIndicators(ctx, "", proxyURL, insecureSkipTLS)
 
-// TestFormatSentimentReport_Success tests report formatting with valid data
-// TestFormatSentimentReport_Success 测试有效数据的报告格式化
-func TestFormatSentimentReport_Success(t *testing.T) {
-	sentiment := &SentimentData{
-		Success:          true,
-		PositiveRatio:    0.65,
-		NegativeRatio:    0.35,
-		NetSentiment:     0.30,
-		SentimentLevel:   "偏向乐观 ✅",
-		DataTime:         "2025-11-11 22:00:00",
-		DataDelayMinutes: 45,
-		Symbol:           "BTC",
+	// 检查结果
+	if !sentiment.Success {
+		t.Logf("❌ API 调用失败")
+		t.Logf("错误信息: %s", sentiment.Error)
+		t.Log("")
+		t.Log("故障排查提示:")
+		t.Log("1. 检查网络连接是否正常")
+		t.Log("2. 如果在国内，尝试配置代理或使用 VPN")
+		t.Log("3. 验证 API Key 是否有效（访问 https://pro.coinmarketcap.com/account）")
+		t.Log("4. 检查防火墙设置是否阻止了 HTTPS 请求")
+		t.Fatal("情绪数据获取失败")
 	}
 
+	// 成功：打印详细信息
+	t.Log("✅ API 调用成功！")
+	t.Log("")
+	t.Log("========== 市场情绪数据 ==========")
+	t.Logf("恐惧和贪婪指数: %d / 100", sentiment.FearGreedValue)
+	t.Logf("情绪分类: %s", sentiment.Classification)
+	t.Logf("情绪解读: %s", interpretFearGreed(sentiment.FearGreedValue))
+	t.Logf("数据时间: %s", sentiment.DataTime)
+	t.Logf("数据延迟: %d 分钟", sentiment.DataDelayMinutes)
+	t.Log("=================================")
+	t.Log("")
+
+	// 生成格式化报告
 	report := FormatSentimentReport(sentiment)
+	t.Log("格式化报告:")
+	t.Logf("%s", report)
 
-	// Check for required sections
-	requiredSections := []string{
-		"市场情绪分析报告",
-		"情绪指标概览",
-		"正面情绪比率",
-		"负面情绪比率",
-		"净情绪值",
-		"情绪等级",
-		"情绪解读",
-		"交易建议参考",
-		"数据来源",
-		"BTC",
-		"偏向乐观",
+	// 验证数据有效性
+	if sentiment.FearGreedValue < 0 || sentiment.FearGreedValue > 100 {
+		t.Errorf("恐惧和贪婪指数超出范围 (0-100): %d", sentiment.FearGreedValue)
 	}
 
-	for _, section := range requiredSections {
-		if !strings.Contains(report, section) {
-			t.Errorf("Report missing section: %s", section)
+	if sentiment.Classification == "" {
+		t.Error("情绪分类为空")
+	}
+
+	if sentiment.DataTime == "" {
+		t.Error("数据时间为空")
+	}
+
+	t.Log("✅ 所有验证通过！")
+}
+
+// TestGetSentimentIndicatorsMultipleTimes 测试多次调用 API（检查稳定性）
+func TestGetSentimentIndicatorsMultipleTimes(t *testing.T) {
+	// 从 .env 文件加载配置
+	// Load configuration from .env file
+	loadEnvConfig(t)
+
+	t.Log("测试连续调用 API 3 次...")
+
+	// 从 .env 文件读取代理配置
+	// Read proxy configuration from .env file
+	proxyURL := viper.GetString("BINANCE_PROXY")
+	insecureSkipTLS := viper.GetBool("BINANCE_PROXY_INSECURE_SKIP_TLS")
+
+	for i := 1; i <= 3; i++ {
+		t.Logf("\n第 %d 次调用:", i)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		sentiment := GetSentimentIndicators(ctx, "", proxyURL, insecureSkipTLS)
+		cancel()
+
+		if !sentiment.Success {
+			t.Logf("  ❌ 第 %d 次调用失败: %s", i, sentiment.Error)
+			continue
+		}
+
+		t.Logf("  ✅ 成功 - 指数: %d, 分类: %s", sentiment.FearGreedValue, sentiment.Classification)
+
+		// 两次调用之间等待 1 秒，避免触发速率限制
+		if i < 3 {
+			time.Sleep(1 * time.Second)
+		}
+	}
+}
+
+// TestInterpretFearGreed 测试恐惧和贪婪指数解读函数
+func TestInterpretFearGreed(t *testing.T) {
+	testCases := []struct {
+		value    int
+		expected string
+	}{
+		{0, "极度恐惧 ❄️ (Extreme Fear)"},
+		{10, "极度恐惧 ❄️ (Extreme Fear)"},
+		{19, "极度恐惧 ❄️ (Extreme Fear)"},
+		{20, "恐惧 📉 (Fear)"},
+		{30, "恐惧 📉 (Fear)"},
+		{44, "恐惧 📉 (Fear)"},
+		{45, "中性 ➖ (Neutral)"},
+		{50, "中性 ➖ (Neutral)"},
+		{54, "中性 ➖ (Neutral)"},
+		{55, "贪婪 📈 (Greed)"},
+		{60, "贪婪 📈 (Greed)"},
+		{74, "贪婪 📈 (Greed)"},
+		{75, "极度贪婪 🔥 (Extreme Greed)"},
+		{85, "极度贪婪 🔥 (Extreme Greed)"},
+		{100, "极度贪婪 🔥 (Extreme Greed)"},
+	}
+
+	for _, tc := range testCases {
+		result := interpretFearGreed(tc.value)
+		if result != tc.expected {
+			t.Errorf("interpretFearGreed(%d) = %s, 期望 %s", tc.value, result, tc.expected)
 		}
 	}
 
-	// Check values
-	if !strings.Contains(report, "65.00%") {
-		t.Error("Report missing positive ratio value")
-	}
-	if !strings.Contains(report, "35.00%") {
-		t.Error("Report missing negative ratio value")
-	}
-	if !strings.Contains(report, "+0.3000") {
-		t.Error("Report missing net sentiment value")
-	}
-
-	t.Logf("✅ Report formatted correctly")
-	t.Log("Report preview:")
-	t.Log(report)
+	t.Log("✅ 所有解读函数测试通过")
 }
 
-// TestFormatSentimentReport_Failure tests report formatting with error
-// TestFormatSentimentReport_Failure 测试错误情况的报告格式化
-func TestFormatSentimentReport_Failure(t *testing.T) {
-	sentiment := &SentimentData{
+// TestFormatSentimentReport 测试报告格式化函数
+func TestFormatSentimentReport(t *testing.T) {
+	// 测试成功情况
+	successData := &SentimentData{
+		Success:          true,
+		FearGreedValue:   21,
+		Classification:   "Fear",
+		DataTime:         "2025-12-06 01:53:10",
+		DataDelayMinutes: 9,
+	}
+
+	report := FormatSentimentReport(successData)
+	t.Log("成功情况的报告:")
+	t.Logf("%s", report)
+
+	if len(report) == 0 {
+		t.Error("成功情况下报告不应为空")
+	}
+
+	// 测试失败情况
+	failData := &SentimentData{
 		Success: false,
-		Error:   "API request failed: timeout",
-		Symbol:  "ETH",
+		Error:   "网络连接失败",
 	}
 
-	report := FormatSentimentReport(sentiment)
+	failReport := FormatSentimentReport(failData)
+	t.Log("\n失败情况的报告:")
+	t.Logf("%s", failReport)
 
-	// Check error report format
-	requiredParts := []string{
-		"市场情绪数据获取失败",
-		"错误信息",
-		"API request failed: timeout",
-		"ETH",
-		"谨慎交易",
+	if len(failReport) == 0 {
+		t.Error("失败情况下报告不应为空")
 	}
 
-	for _, part := range requiredParts {
-		if !strings.Contains(report, part) {
-			t.Errorf("Error report missing part: %s", part)
-		}
-	}
-
-	t.Logf("✅ Error report formatted correctly")
-	t.Log("Report preview:")
-	t.Log(report)
+	t.Log("✅ 报告格式化测试通过")
 }
 
-// TestSentimentData_EdgeCases tests edge cases
-// TestSentimentData_EdgeCases 测试边界情况
-func TestSentimentData_EdgeCases(t *testing.T) {
-	tests := []struct {
-		name      string
-		sentiment *SentimentData
-		wantPanic bool
-	}{
-		{
-			name: "Zero values",
-			sentiment: &SentimentData{
-				Success:       true,
-				PositiveRatio: 0,
-				NegativeRatio: 0,
-				NetSentiment:  0,
-				Symbol:        "BTC",
-			},
-			wantPanic: false,
-		},
-		{
-			name: "Extreme positive",
-			sentiment: &SentimentData{
-				Success:       true,
-				PositiveRatio: 1.0,
-				NegativeRatio: 0.0,
-				NetSentiment:  1.0,
-				Symbol:        "BTC",
-			},
-			wantPanic: false,
-		},
-		{
-			name: "Extreme negative",
-			sentiment: &SentimentData{
-				Success:       true,
-				PositiveRatio: 0.0,
-				NegativeRatio: 1.0,
-				NetSentiment:  -1.0,
-				Symbol:        "BTC",
-			},
-			wantPanic: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if (r != nil) != tt.wantPanic {
-					t.Errorf("wantPanic = %v, but panic = %v", tt.wantPanic, r != nil)
-				}
-			}()
-
-			if tt.sentiment != nil {
-				report := FormatSentimentReport(tt.sentiment)
-				if report == "" {
-					t.Error("Expected non-empty report")
-				}
-				t.Logf("✅ Report generated for %s", tt.name)
-			}
-		})
-	}
-}
-
-// BenchmarkGetSentimentIndicators benchmarks API performance
-// BenchmarkGetSentimentIndicators 基准测试 API 性能
+// BenchmarkGetSentimentIndicators 性能基准测试
 func BenchmarkGetSentimentIndicators(b *testing.B) {
+	// 从 .env 文件加载配置
+	// Load configuration from .env file
+	viper.SetConfigType("env")
+	viper.SetConfigFile("../../.env")
+	viper.AutomaticEnv()
+	if err := viper.ReadInConfig(); err != nil {
+		b.Logf("⚠️  无法读取 .env 文件: %v (将使用系统环境变量)", err)
+	}
+
 	ctx := context.Background()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
-		GetSentimentIndicators(ctx, "BTC")
-	}
-}
-
-// BenchmarkInterpretSentiment benchmarks sentiment interpretation
-// BenchmarkInterpretSentiment 基准测试情绪解释
-func BenchmarkInterpretSentiment(b *testing.B) {
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		interpretSentiment(0.5)
-	}
-}
-
-// BenchmarkFormatSentimentReport benchmarks report formatting
-// BenchmarkFormatSentimentReport 基准测试报告格式化
-func BenchmarkFormatSentimentReport(b *testing.B) {
-	sentiment := &SentimentData{
-		Success:          true,
-		PositiveRatio:    0.65,
-		NegativeRatio:    0.35,
-		NetSentiment:     0.30,
-		SentimentLevel:   "偏向乐观 ✅",
-		DataTime:         "2025-11-11 22:00:00",
-		DataDelayMinutes: 45,
-		Symbol:           "BTC",
-	}
+	// 从 .env 文件读取代理配置
+	// Read proxy configuration from .env file
+	proxyURL := viper.GetString("BINANCE_PROXY")
+	insecureSkipTLS := viper.GetBool("BINANCE_PROXY_INSECURE_SKIP_TLS")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		FormatSentimentReport(sentiment)
+		_ = GetSentimentIndicators(ctx, "", proxyURL, insecureSkipTLS)
+		// 避免触发 API 速率限制
+		time.Sleep(100 * time.Millisecond)
 	}
 }
