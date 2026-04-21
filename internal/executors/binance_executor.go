@@ -27,6 +27,17 @@ const (
 	ActionHold       TradeAction = "HOLD"
 )
 
+// isNetworkError checks if the error is a network-related error
+// isNetworkError 检查错误是否是网络相关错误
+func isNetworkError(err error) bool {
+	errStr := err.Error()
+	return strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "reset by peer") ||
+		strings.Contains(errStr, "broken pipe")
+}
+
 // PositionMode represents the position mode
 type PositionMode string
 
@@ -500,6 +511,25 @@ func (e *BinanceExecutor) executeBuy(ctx context.Context, symbol string, current
 			Do(ctx)
 
 		if err != nil {
+			e.logger.Error(fmt.Sprintf("%s❌ 开多仓失败: %v", modeLabel, err))
+
+			// Check if this is a network error and verify order status
+			// 检查是否是网络错误，并验证订单状态
+			if isNetworkError(err) {
+				e.logger.Warning("⚠️ 检测到网络错误，正在检查订单是否已执行...")
+				time.Sleep(2 * time.Second) // Wait for order to settle
+
+				// Get current position from Binance
+				pos, getErr := e.GetCurrentPosition(ctx, symbol)
+				if getErr == nil && pos != nil && pos.Size > 0 && pos.Side == "long" {
+					// Order was actually executed (confirmed long position)
+					e.logger.Success(fmt.Sprintf("%s✅ 订单实际已执行成功！成交价: %.2f", modeLabel, pos.EntryPrice))
+					result.Success = true
+					result.Price = pos.EntryPrice
+					result.Message = "订单执行成功（网络恢复后验证）"
+					return nil
+				}
+			}
 			return err
 		}
 
@@ -547,7 +577,7 @@ func (e *BinanceExecutor) executeSell(ctx context.Context, symbol string, curren
 			positionSide = futures.PositionSideTypeBoth
 		}
 
-		_, err := e.client.NewCreateOrderService().
+		order, err := e.client.NewCreateOrderService().
 			Symbol(binanceSymbol).
 			Side(futures.SideTypeSell).
 			PositionSide(positionSide).
@@ -556,9 +586,17 @@ func (e *BinanceExecutor) executeSell(ctx context.Context, symbol string, curren
 			Do(ctx)
 
 		if err != nil {
+			e.logger.Error(fmt.Sprintf("%s❌ 平多仓失败: %v", modeLabel, err))
 			return err
 		}
+		
+		e.logger.Success(fmt.Sprintf("%s✅ 平多仓成功，订单ID: %d", modeLabel, order.OrderID))
 		time.Sleep(1 * time.Second)
+		
+		// Refresh position after closing long
+		// 平多仓后刷新持仓状态
+		currentPosition, _ = e.GetCurrentPosition(ctx, symbol)
+		e.logger.Info(fmt.Sprintf("刷新持仓状态: %v", currentPosition))
 	}
 
 	// Open short position if not already short
@@ -582,6 +620,25 @@ func (e *BinanceExecutor) executeSell(ctx context.Context, symbol string, curren
 			Do(ctx)
 
 		if err != nil {
+			e.logger.Error(fmt.Sprintf("%s❌ 开空仓失败: %v", modeLabel, err))
+
+			// Check if this is a network error and verify order status
+			// 检查是否是网络错误，并验证订单状态
+			if isNetworkError(err) {
+				e.logger.Warning("⚠️ 检测到网络错误，正在检查订单是否已执行...")
+				time.Sleep(2 * time.Second) // Wait for order to settle
+
+				// Get current position from Binance
+				pos, getErr := e.GetCurrentPosition(ctx, symbol)
+				if getErr == nil && pos != nil && pos.Size > 0 && pos.Side == "short" {
+					// Order was actually executed (confirmed short position)
+					e.logger.Success(fmt.Sprintf("%s✅ 订单实际已执行成功！成交价: %.2f", modeLabel, pos.EntryPrice))
+					result.Success = true
+					result.Price = pos.EntryPrice
+					result.Message = "订单执行成功（网络恢复后验证）"
+					return nil
+				}
+			}
 			return err
 		}
 
@@ -650,6 +707,7 @@ func (e *BinanceExecutor) executeCloseLong(ctx context.Context, symbol string, c
 	order, err := orderService.Do(ctx)
 
 	if err != nil {
+		e.logger.Error(fmt.Sprintf("Binance 原始错误: %#v", err))
 		return err
 	}
 
