@@ -66,6 +66,70 @@ func NewStopLossManager(cfg *config.Config, executor *BinanceExecutor, log *logg
 	}
 }
 
+// SyncPositionsFromBinance syncs all open positions from Binance to local storage
+// SyncPositionsFromBinance 从币安同步所有持仓到本地存储
+func (sm *StopLossManager) SyncPositionsFromBinance(ctx context.Context) error {
+	sm.logger.Info("🔄 正在从币安同步持仓...")
+	
+	for _, symbol := range sm.config.CryptoSymbols {
+		pos, err := sm.executor.GetCurrentPosition(ctx, symbol)
+		if err != nil {
+			sm.logger.Warning(fmt.Sprintf("【%s】⚠️ 获取持仓失败: %v", symbol, err))
+			continue
+		}
+		
+		if pos == nil || pos.Size == 0 {
+			sm.logger.Info(fmt.Sprintf("【%s】无持仓", symbol))
+			continue
+		}
+		
+		// Check if position already exists locally
+		// 检查本地是否已有持仓
+		normalizedSymbol := sm.config.GetBinanceSymbolFor(symbol)
+		sm.mu.Lock()
+		_, exists := sm.positions[normalizedSymbol]
+		sm.mu.Unlock()
+		
+		if exists {
+			sm.logger.Info(fmt.Sprintf("【%s】本地已存在持仓，跳过同步", symbol))
+			continue
+		}
+		
+		// Calculate default stop-loss if not set
+		// 如果没有止损价格，计算默认止损
+		if pos.Size > 0 && (pos.CurrentStopLoss == 0 || pos.InitialStopLoss == 0) {
+			defaultStopLoss := calculateDefaultStopLoss(pos)
+			pos.InitialStopLoss = defaultStopLoss
+			pos.CurrentStopLoss = defaultStopLoss
+		}
+		
+		// Register position
+		// 注册持仓
+		sm.RegisterPosition(pos)
+		sm.logger.Success(fmt.Sprintf("【%s】✅ 持仓同步成功，入场价: %.2f, 止损: %.2f, 数量: %.4f",
+			symbol, pos.EntryPrice, pos.CurrentStopLoss, pos.Size))
+	}
+
+	sm.logger.Success("🔄 币安持仓同步完成")
+	return nil
+}
+
+// calculateDefaultStopLoss calculates default stop-loss price based on position side
+// calculateDefaultStopLoss 根据持仓方向计算默认止损价格
+func calculateDefaultStopLoss(pos *Position) float64 {
+	if pos.EntryPrice == 0 || pos.Size == 0 {
+		return 0
+	}
+	
+	// Default 2.5% stop-loss
+	// 默认 2.5% 止损
+	if pos.Side == "long" {
+		return pos.EntryPrice * 0.975 // -2.5% for long
+	} else {
+		return pos.EntryPrice * 1.025 // +2.5% for short
+	}
+}
+
 // RegisterPosition registers a new position for stop-loss management
 // RegisterPosition 注册新持仓进行止损管理
 func (sm *StopLossManager) RegisterPosition(pos *Position) {
@@ -303,12 +367,39 @@ func (sm *StopLossManager) UpdateStopLoss(ctx context.Context, symbol string, ne
 	normalizedSymbol := sm.config.GetBinanceSymbolFor(symbol)
 
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	pos, exists := sm.positions[normalizedSymbol]
 	if !exists {
-		return fmt.Errorf("持仓 %s 不存在", symbol)
+		sm.mu.Unlock() // Unlock before external call
+		
+		// Try to fetch position from Binance and register it
+		// 尝试从币安获取持仓并注册
+		sm.logger.Warning(fmt.Sprintf("【%s】⚠️ 本地持仓不存在，尝试从币安获取...", symbol))
+		binancePos, err := sm.executor.GetCurrentPosition(ctx, symbol)
+		if err != nil {
+			return fmt.Errorf("获取币安持仓失败: %w", err)
+		}
+		if binancePos == nil || binancePos.Size == 0 {
+			return fmt.Errorf("持仓 %s 不存在", symbol)
+		}
+		
+		// Register the position with stop-loss from LLM
+		// 使用 LLM 提供的止损价格注册持仓
+		binancePos.CurrentStopLoss = newStopLoss
+		binancePos.InitialStopLoss = newStopLoss
+		sm.RegisterPosition(binancePos)
+		
+		// Place initial stop-loss order on Binance
+		// 在币安上下初始止损单
+		if err := sm.PlaceInitialStopLoss(ctx, binancePos); err != nil {
+			sm.logger.Error(fmt.Sprintf("【%s】❌ 下初始止损单失败: %v", symbol, err))
+			return fmt.Errorf("下初始止损单失败: %w", err)
+		}
+		
+		// Re-acquire lock
+		sm.mu.Lock()
+		pos = sm.positions[normalizedSymbol]
 	}
+	defer sm.mu.Unlock()
 
 	oldStop := pos.CurrentStopLoss
 
@@ -963,7 +1054,7 @@ func (sm *StopLossManager) placeStopLossOrder(ctx context.Context, pos *Position
 		Side(orderSide).
 		Type(futures.AlgoOrderTypeStopMarket).        // Use Algo Order Type
 		TriggerPrice(fmt.Sprintf("%.2f", stopPrice)). // Use TriggerPrice instead of StopPrice
-		Quantity(fmt.Sprintf("%.4f", pos.Quantity)).
+		Quantity(fmt.Sprintf("%.4f", pos.Size)).      // Use Size instead of Quantity
 		ReduceOnly(true). // 只平仓不开仓 / Close only
 		Do(ctx)
 
