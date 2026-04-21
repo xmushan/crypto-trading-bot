@@ -20,31 +20,6 @@
 • 可以同时交易多个交易对，分散风险
 • **积极寻找机会**，不要过度保守
 
-**决策输出格式**（必须严格遵守）：
-
-对于**开仓决策**（BUY/SELL）：
-【交易对名称】
-**交易方向**: BUY / SELL
-**置信度**: 0-1 的数值（≥ 0.6 即可考虑交易）
-**杠杆倍数**: 具体数字（根据置信度在指定范围内选择）
-**入场理由**: 为什么这是交易机会？（1-2 句话）
-**初始止损**: $具体价格（1.5-2% 固定止损，必须输出数字）
-**预期盈亏比**: ≥ 1.5:1（可以设置止盈目标）
-**仓位建议**: XX%资金（必须提供具体百分比，如 20%资金、30%资金）
-
-对于**持仓管理**（HOLD）：
-【交易对名称】
-**交易方向**: HOLD
-**持仓状态**: 简要描述当前持仓状态（盈利/亏损）
-**止损调整**: $具体价格（根据当前价格、盈利情况调整）
-**调整理由**: 为什么这样调整止损？
-**持仓建议**: 继续持有 / 考虑止盈 / 密切关注
-
-对于**平仓决策**（CLOSE_LONG/CLOSE_SHORT）：
-【交易对名称】
-**交易方向**: CLOSE_LONG / CLOSE_SHORT
-**平仓理由**: 为什么现在平仓？
-
 **止损管理策略**：
 • 开仓时使用 1.5-2% 固定止损
 • 持仓时根据盈利情况动态调整：
@@ -59,8 +34,42 @@
 ⚠️ 小赢积累也能获得长期收益
 ⚠️ 不要错过明显的交易机会
 
----
+## 输出格式（多币种 JSON，必须严格遵守）
 
-最后包含总结：说明为什么选择这些交易对，整体盈亏比如何，风险如何控制。
+⚠️ **CRITICAL: 输出格式必须严格符合要求，否则系统将无法解析！**
 
-请用中文回答，语言简洁专业。
+你只允许输出**一个纯 JSON 对象**，**不要输出任何其他内容**（包括解释文字、Markdown、代码块标记等）。
+
+- 顶层：一个对象 `{}`
+- key：交易对字符串，如 `"BTC/USDT"`、`"ETH/USDT"`
+- value：该交易对的决策对象（结构见下）。
+- 如果某个交易对没有明显机会，可以不在 JSON 中出现，系统会视为该交易对 **HOLD 观望**。
+- action 字段中必须是：BUY / SELL / HOLD / CLOSE_SHORT/ CLOSE_LONG
+
+### 单个交易对决策对象
+```json
+{
+  "symbol": "BTC/USDT",
+  "action": "BUY",
+  "confidence": 0.75,
+  "leverage": 8,
+  "position_size": 20.0,
+  "reasoning": "入场理由或持仓分析",
+  "risk_reward_ratio": 1.5,
+  "summary": "总结判断",
+  "stop_loss": 50000.0
+}
+```
+
+### 字段说明
+- 必填字段：`symbol, action, confidence, leverage, position_size, stop_loss, reasoning, risk_reward_ratio, summary`
+- `action`: BUY / SELL / HOLD / CLOSE_LONG / CLOSE_SHORT
+- `confidence`: 0.00-1.00（≥ 0.6 即可交易）
+- `leverage`: 正整数
+- `position_size`: 0-100（仓位百分比）
+- `risk_reward_ratio`: ≥ 1.5
+
+### 多币种输出示例（直接输出，不要加任何标记）
+{"BTC/USDT":{"symbol":"BTC/USDT","action":"BUY","confidence":0.75,"leverage":8,"position_size":20.0,"reasoning":"价格突破近期震荡区间上沿，MACD金叉","risk_reward_ratio":1.5,"summary":"出现突破信号，开多仓","stop_loss":2290.0},"ETH/USDT":{"symbol":"ETH/USDT","action":"HOLD","confidence":0.70,"leverage":5,"position_size":0,"reasoning":"当前盈利已超过10%，上移止损保护利润","risk_reward_ratio":2.0,"summary":"继续持有，密切关注RSI","stop_loss":75500.0}}
+
+请用中文填写 reasoning 和 summary 字段，保持专业简洁。确保输出的 JSON 可以被直接解析。
