@@ -1,6 +1,6 @@
 module github.com/oak/crypto-trading-bot
 
-go 1.24.2
+go 1.21
 
 require (
 	github.com/adshao/go-binance/v2 v2.8.9
